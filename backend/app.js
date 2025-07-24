@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
-const crypto = require('crypto'); // Added crypto module
+const crypto = require('crypto');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -51,19 +51,18 @@ const initializeDb = async () => {
     `);
 
     // Add to initializeDb function
-    await pool.query(`
+  await pool.query(`
       CREATE TABLE IF NOT EXISTS payment_links (
         id SERIAL PRIMARY KEY,
         token VARCHAR(100) UNIQUE NOT NULL,
-        active BOOLEAN DEFAULT TRUE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
     // Insert the fixed token if not exists
-    await pool.query(`
-      INSERT INTO payment_links (token, active)
-      VALUES ('4vXcZpLmKjQ8aTyNfRbEoWg7HdUs29qT', TRUE)
+     await pool.query(`
+      INSERT INTO payment_links (token)
+      VALUES ('4vXcZpLmKjQ8aTyNfRbEoWg7HdUs29qT')
       ON CONFLICT (token) DO NOTHING
     `);
 
@@ -118,9 +117,10 @@ app.get('/api/payment-link/:token', async (req, res) => {
       });
     }
 
+    // Always return active: true
     res.status(200).json({
       success: true,
-      active: result.rows[0].active
+      active: true
     });
   } catch (error) {
     console.error('Error fetching link status:', error);
@@ -130,6 +130,7 @@ app.get('/api/payment-link/:token', async (req, res) => {
     });
   }
 });
+
 
 // Endpoint to toggle link status
 app.put('/api/admin/payment-link/:token', async (req, res) => {
@@ -519,15 +520,7 @@ app.post('/api/admin/client-links', async (req, res) => {
   expiresAt.setDate(expiresAt.getDate() + 1);
 
   try {
-    // Deactivate any existing links
-    await pool.query(
-      `UPDATE client_links 
-       SET active = false 
-       WHERE client_id = $1`,
-      [clientId]
-    );
-
-    // Create new link
+    // Create new link - ALWAYS ACTIVE
     const result = await pool.query(
       `INSERT INTO client_links (client_id, token, expires_at)
        VALUES ($1, $2, $3)
@@ -546,6 +539,7 @@ app.post('/api/admin/client-links', async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to generate link' });
   }
 });
+
 
 app.get('/api/client-details/:token', async (req, res) => {
   const { token } = req.params;
