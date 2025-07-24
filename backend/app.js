@@ -66,6 +66,28 @@ const initializeDb = async () => {
   ON CONFLICT (token) DO NOTHING
 `);
 
+    await pool.query(`
+  CREATE TABLE IF NOT EXISTS clients (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(100) NOT NULL,
+    phone VARCHAR(20) NOT NULL,
+    company VARCHAR(100),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+    await pool.query(`
+  CREATE TABLE IF NOT EXISTS client_links (
+    id SERIAL PRIMARY KEY,
+    client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE,
+    token VARCHAR(100) UNIQUE NOT NULL,
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL
+  )
+`);
+
 
     console.log('Database initialized');
   } catch (err) {
@@ -457,14 +479,14 @@ app.get('/api/admin/payment-link/:token', async (req, res) => {
       `SELECT * FROM payment_links WHERE token = $1`,
       [token]
     );
-    
+
     if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'Payment link not found'
       });
     }
-    
+
     res.status(200).json({
       success: true,
       paymentLink: result.rows[0]
@@ -478,6 +500,137 @@ app.get('/api/admin/payment-link/:token', async (req, res) => {
   }
 });
 
+
+
+// New endpoints for client management
+app.post('/api/admin/clients', async (req, res) => {
+  const { name, email, phone, company } = req.body;
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO clients (name, email, phone, company)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [name, email, phone, company]
+    );
+
+    res.status(201).json({
+      success: true,
+      client: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error creating client:', error);
+    res.status(500).json({ success: false, message: 'Failed to create client' });
+  }
+});
+
+app.get('/api/admin/clients', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT c.*, 
+             cl.token AS active_token,
+             cl.expires_at AS token_expiry,
+             cl.active AS token_active
+      FROM clients c
+      LEFT JOIN client_links cl ON c.id = cl.client_id 
+        AND cl.expires_at > NOW()
+        AND cl.active = true
+      ORDER BY c.created_at DESC
+    `);
+
+    res.status(200).json({ success: true, clients: result.rows });
+  } catch (error) {
+    console.error('Error fetching clients:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch clients' });
+  }
+});
+
+app.post('/api/admin/client-links', async (req, res) => {
+  const { clientId } = req.body;
+
+  // Generate unique token
+  const token = crypto.randomBytes(32).toString('hex');
+
+  // Set expiration to 1 day from now
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + 1);
+
+  try {
+    // Deactivate any existing links
+    await pool.query(
+      `UPDATE client_links 
+       SET active = false 
+       WHERE client_id = $1`,
+      [clientId]
+    );
+
+    // Create new link
+    const result = await pool.query(
+      `INSERT INTO client_links (client_id, token, expires_at)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [clientId, token, expiresAt]
+    );
+
+    res.status(201).json({
+      success: true,
+      link: `https://www.zorvixetechnologies.com/payment/${token}`,
+      expiresAt
+    });
+  } catch (error) {
+    console.error('Error generating link:', error);
+    res.status(500).json({ success: false, message: 'Failed to generate link' });
+  }
+});
+
+app.get('/api/client-details/:token', async (req, res) => {
+  const { token } = req.params;
+
+  try {
+    // Get link details
+    const linkResult = await pool.query(
+      `SELECT * FROM client_links 
+       WHERE token = $1 
+         AND active = true 
+         AND expires_at > NOW()`,
+      [token]
+    );
+
+    if (linkResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Link not found or expired'
+      });
+    }
+
+    const link = linkResult.rows[0];
+
+    // Get client details
+    const clientResult = await pool.query(
+      `SELECT * FROM clients WHERE id = $1`,
+      [link.client_id]
+    );
+
+    if (clientResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Client not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      client: clientResult.rows[0],
+      link
+    });
+  } catch (error) {
+    console.error('Error fetching client details:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch client details'
+    });
+  }
+});
 
 // Start server
 app.listen(port, () => {
