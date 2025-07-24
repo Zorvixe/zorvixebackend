@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
+const crypto = require('crypto'); // Added crypto module
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -51,43 +52,42 @@ const initializeDb = async () => {
 
     // Add to initializeDb function
     await pool.query(`
-  CREATE TABLE IF NOT EXISTS payment_links (
-    id SERIAL PRIMARY KEY,
-    token VARCHAR(100) UNIQUE NOT NULL,
-    active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )
-`);
+      CREATE TABLE IF NOT EXISTS payment_links (
+        id SERIAL PRIMARY KEY,
+        token VARCHAR(100) UNIQUE NOT NULL,
+        active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
     // Insert the fixed token if not exists
     await pool.query(`
-  INSERT INTO payment_links (token, active)
-  VALUES ('4vXcZpLmKjQ8aTyNfRbEoWg7HdUs29qT', TRUE)
-  ON CONFLICT (token) DO NOTHING
-`);
+      INSERT INTO payment_links (token, active)
+      VALUES ('4vXcZpLmKjQ8aTyNfRbEoWg7HdUs29qT', TRUE)
+      ON CONFLICT (token) DO NOTHING
+    `);
 
     await pool.query(`
-  CREATE TABLE IF NOT EXISTS clients (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    email VARCHAR(100) NOT NULL,
-    phone VARCHAR(20) NOT NULL,
-    company VARCHAR(100),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )
-`);
+      CREATE TABLE IF NOT EXISTS clients (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        email VARCHAR(100) NOT NULL,
+        phone VARCHAR(20) NOT NULL,
+        company VARCHAR(100),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
     await pool.query(`
-  CREATE TABLE IF NOT EXISTS client_links (
-    id SERIAL PRIMARY KEY,
-    client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE,
-    token VARCHAR(100) UNIQUE NOT NULL,
-    active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP NOT NULL
-  )
-`);
-
+      CREATE TABLE IF NOT EXISTS client_links (
+        id SERIAL PRIMARY KEY,
+        client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE,
+        token VARCHAR(100) UNIQUE NOT NULL,
+        active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP NOT NULL
+      )
+    `);
 
     console.log('Database initialized');
   } catch (err) {
@@ -205,7 +205,7 @@ app.post('/api/contact/submit', async (req, res) => {
   }
 });
 
-// Get all contact submissions (add this after the POST endpoint)
+// Get all contact submissions
 app.get('/api/contacts', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -225,40 +225,6 @@ app.get('/api/contacts', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch contacts',
-      error: error.message
-    });
-  }
-});
-
-// Payment registration submission
-app.post('/api/payment/submit', async (req, res) => {
-  const { clientName, projectName, clientId, amount, dueDate, receiptUrl } = req.body;
-
-  // Generate reference ID (format: PAY-YYYY-RANDOM6)
-  const year = new Date().getFullYear();
-  const randomString = Math.random().toString(36).substr(2, 6).toUpperCase();
-  const referenceId = `PAY-${year}-${randomString}`;
-
-  try {
-    const result = await pool.query(
-      `INSERT INTO payment_registrations 
-        (client_name, project_name, client_id, amount, due_date, receipt_url, reference_id) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7) 
-       RETURNING *`,
-      [clientName, projectName, clientId, amount, dueDate, receiptUrl, referenceId]
-    );
-
-    res.status(201).json({
-      success: true,
-      message: 'Payment registration submitted successfully',
-      referenceId,
-      data: result.rows[0]
-    });
-  } catch (error) {
-    console.error('Database error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to submit payment registration',
       error: error.message
     });
   }
@@ -470,7 +436,6 @@ app.get('/api/admin/payments/search', async (req, res) => {
   }
 });
 
-// Add this endpoint after your existing endpoints
 // Endpoint to get payment link by token (for admin panel)
 app.get('/api/admin/payment-link/:token', async (req, res) => {
   const { token } = req.params;
@@ -499,8 +464,6 @@ app.get('/api/admin/payment-link/:token', async (req, res) => {
     });
   }
 });
-
-
 
 // New endpoints for client management
 app.post('/api/admin/clients', async (req, res) => {
@@ -575,6 +538,7 @@ app.post('/api/admin/client-links', async (req, res) => {
     res.status(201).json({
       success: true,
       link: `https://www.zorvixetechnologies.com/payment/${token}`,
+      token,
       expiresAt
     });
   } catch (error) {
@@ -618,10 +582,32 @@ app.get('/api/client-details/:token', async (req, res) => {
       });
     }
 
+    const client = clientResult.rows[0];
+    
+    // Get payment details (if any)
+    const paymentResult = await pool.query(
+      `SELECT * FROM payment_registrations 
+       WHERE client_id = $1 
+       ORDER BY created_at DESC 
+       LIMIT 1`,
+      [client.id]
+    );
+    
+    const paymentDetails = paymentResult.rows[0] || {
+      amount: 5000, // Default amount
+      due_date: new Date(Date.now() + 7*24*60*60*1000) // Default due in 7 days
+    };
+
     res.status(200).json({
       success: true,
-      client: clientResult.rows[0],
-      link
+      client: {
+        ...client,
+        clientName: client.name,
+        clientId: client.id,
+        projectName: paymentDetails.project_name || "New Project",
+        amount: paymentDetails.amount,
+        dueDate: paymentDetails.due_date
+      }
     });
   } catch (error) {
     console.error('Error fetching client details:', error);
